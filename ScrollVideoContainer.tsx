@@ -26,17 +26,33 @@ export const ScrollVideoContainer: React.FC<ScrollVideoProps> = ({
 
     if (!video || !container) return;
 
+    // 모바일 브라우저 호환성을 위한 추가 속성 설정
+    // iOS Safari와 Android Chrome에서 인라인 재생을 보장
+    if (video) {
+      (video as any).webkitPlaysInline = true;
+      (video as any).playsInline = true;
+      // Android WebView (특히 WeChat 등) 지원
+      (video as any).setAttribute('x5-playsinline', 'true');
+      (video as any).setAttribute('webkit-playsinline', 'true');
+    }
+
+    // 컨테이너의 시작 위치를 저장 (한 번만 계산)
+    const containerStartTop = container.offsetTop;
+    const containerHeight = container.offsetHeight;
+    
     // 스크롤 위치를 계산하는 함수 (모바일/데스크톱 모두 대응)
+    // 모바일에서 getBoundingClientRect()가 제대로 업데이트되지 않을 수 있으므로
+    // window.scrollY를 직접 사용하는 방식으로 변경
     const calculateScrollProgress = () => {
-      // 모바일에서 더 정확한 스크롤 위치 계산을 위해 여러 방법 시도
-      const containerRect = container.getBoundingClientRect();
-      const windowHeight = window.innerHeight;
+      // window.scrollY를 직접 사용 (모바일에서 더 정확함)
+      const scrollY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0;
+      const windowHeight = window.innerHeight || document.documentElement.clientHeight;
       
-      // 스크롤 거리 계산: 컨테이너가 뷰포트 상단을 지나간 거리
-      const scrollDistance = -containerRect.top;
+      // 컨테이너가 뷰포트에 들어오기 시작한 시점부터의 스크롤 거리
+      const scrollDistance = Math.max(0, scrollY - containerStartTop);
       
-      // 최대 스크롤 가능 거리
-      const maxScroll = containerRect.height - windowHeight;
+      // 최대 스크롤 가능 거리 (컨테이너 높이 - 뷰포트 높이)
+      const maxScroll = Math.max(0, containerHeight - windowHeight);
 
       if (maxScroll <= 0) return 0;
 
@@ -89,15 +105,24 @@ export const ScrollVideoContainer: React.FC<ScrollVideoProps> = ({
     // 모바일에서도 안정적으로 작동하도록 requestAnimationFrame에서 직접 스크롤 위치 확인
     let animationFrameId: number;
     let lastProgress = -1;
+    let lastUpdateTime = 0;
 
-    const renderLoop = () => {
+    const renderLoop = (currentTime: number) => {
       if (video && container) {
-        // 모바일 대응: requestAnimationFrame 루프에서도 직접 스크롤 위치 확인
+        // 비디오가 준비되었는지 확인 (모바일에서 중요)
+        // readyState 2 (HAVE_CURRENT_DATA) 이상이어야 currentTime 설정 가능
+        if (video.readyState < 2) {
+          animationFrameId = requestAnimationFrame(renderLoop);
+          return;
+        }
+
+        // 모바일 대응: requestAnimationFrame 루프에서 직접 스크롤 위치 확인
         // 이렇게 하면 스크롤 이벤트가 throttling되어도 계속 업데이트됨
         const currentProgress = calculateScrollProgress();
         
         // 진행도가 변경되었을 때만 목표 시간 업데이트
-        if (Math.abs(currentProgress - lastProgress) > 0.001) {
+        // 모바일에서 더 민감하게 반응하도록 threshold를 낮춤
+        if (Math.abs(currentProgress - lastProgress) > 0.0001) {
           if (!Number.isNaN(video.duration) && video.duration > 0) {
             targetTimeRef.current = currentProgress * video.duration;
             lastProgress = currentProgress;
@@ -105,17 +130,24 @@ export const ScrollVideoContainer: React.FC<ScrollVideoProps> = ({
         }
 
         // Easing factor: 부드러운 전환을 위한 값
-        const easing = 0.15; 
+        // 모바일에서 더 빠르게 반응하도록 easing 증가
+        const easing = 0.2; 
         
         // 현재 시간과 목표 시간의 차이 계산
         const diff = targetTimeRef.current - video.currentTime;
         
         // 차이가 충분히 클 때만 업데이트 (시각적으로 의미있는 차이)
-        if (Math.abs(diff) > 0.01) {
+        // 모바일에서 더 민감하게 반응하도록 threshold를 낮춤
+        if (Math.abs(diff) > 0.005) {
           // CRITICAL: Seeking Guard
           // 비디오가 현재 프레임을 디코딩 중이면 업데이트를 건너뛰어 끊김 방지
           if (!video.seeking) {
-            video.currentTime += diff * easing;
+            try {
+              video.currentTime += diff * easing;
+            } catch (e) {
+              // 모바일에서 currentTime 설정이 실패할 수 있으므로 에러 처리
+              console.warn('Video currentTime update failed:', e);
+            }
           }
         }
       }
@@ -123,8 +155,8 @@ export const ScrollVideoContainer: React.FC<ScrollVideoProps> = ({
       animationFrameId = requestAnimationFrame(renderLoop);
     };
 
-    // 렌더링 루프 시작
-    renderLoop();
+    // 렌더링 루프 시작 (requestAnimationFrame은 자동으로 timestamp를 전달)
+    animationFrameId = requestAnimationFrame(renderLoop);
 
     // 초기 스크롤 위치 계산
     handleScroll();
